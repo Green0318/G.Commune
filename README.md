@@ -11,7 +11,9 @@
 
 </div>
 
-# Benefits for converting a Python module that starts a client session and sends requests into Rust
+# Convert a Python module that starts a client session and sends requests into Rust
+
+## Benefits
 
 - Performance: Rust is known for its performance and can be much faster than Python due to its emphasis on zero-cost abstractions.
 
@@ -22,9 +24,13 @@
 ```bash
 async with aiohttp.ClientSession() as session:
             async with session.post(url, json=request, headers=headers) as response:
+            if response.content_type == 'text/event-stream':
 
             ...
 
+            elif response.content_type == 'text/plain':
+                    # PROCESS TEXT EVENTS
+                    result = await asyncio.wait_for(response.text(), timeout=timeout)
             else:
                 raise ValueError(f"Invalid response content type: {response.content_type}")
 ```
@@ -33,7 +39,7 @@ async with aiohttp.ClientSession() as session:
 
 Two challenges to be solved to improve performance and support concurrency.
 
-## First,how to create rust module and use this in python file.
+## First, how to create rust module and use this in python file.
 
 Created rust module which generates a thread whenever client requests and send http result to each request in that thread.
 
@@ -49,6 +55,7 @@ Need to use this python module in the rust code.
 
 if self.debug:
     progress_bar = c.tqdm(desc='MB per Second', position=0)
+result = []
 
 ```
 
