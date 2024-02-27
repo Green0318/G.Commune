@@ -5,98 +5,13 @@ use std::error::Error;
 use tokio::sync::mpsc::{self, Sender};
 
 #[pyfunction]
-async fn fetch_data_worker(url: String, request: String, headers: Vec<(&str, &str)>, timeout: u64, sender: Sender<Result<Value, Box<dyn Error>>>) {
-    let client = Client::new();
-    let response = client.post(&url)
-        .json(&serde_json::from_str::<Value>(&request).unwrap())
-        .headers(headers.iter().map(|&(k, v)| (k, v).into()))
-        .send()
-        .await; 
- 
-    let result = match response {
-        Ok(response) => {
-            match response.headers().get(reqwest::header::CONTENT_TYPE) {
-                Some(content_type) if content_type == "text/event-stream" => {
-                    const STREAM_PREFIX: &str = "data: ";
-                    const BYTES_PER_MB: f64 = 1e6;
-                    
-                    // Assuming `response.content` is a Tokio stream (e.g., `tokio::io::AsyncRead`).
-                    async fn process_response_content<R>(response_content: R, debug: bool) -> Vec<String>
-                    where
-                        R: tokio::io::AsyncRead + Unpin,
-                    {
-                        if(debug){
-                            let gil = Python::acquire_gil();
-                            let py = gil.python();
-
-                            // Import the tqdm module and get the tqdm function
-                            let tqdm = py.import("tqdm")?.getattr("tqdm")?;
-                            // Call tqdm function with desired arguments
-                            let progress_bar = tqdm.call1(("MB per Second",0))?; 
-                        }
-                        let mut result = Vec::new();
-                        
-
-                        // Create a buffer reader to read lines from the stream.
-                        let mut reader = BufReader::new(response_content);
-
-                        while let Ok(mut line) = reader.read_line().await {
-                            if line.is_empty() {
-                                continue;
-                            }
-
-                            let event_data = line.trim().to_string();
-
-                            if debug {
-                                let event_bytes = event_data.len() as f64;
-                                // Update progress bar
-                                progress_bar.call_method1("update", (event_bytes / BYTES_PER_MB,))?;
-                            }
-
-                            // Remove the "data: " prefix
-                            if event_data.starts_with(STREAM_PREFIX) {
-                                line.replace_range(..STREAM_PREFIX.len(), "");
-                            }
-
-                            // If the data is formatted as a JSON string, load it
-                            if let Ok(event_data) = serde_json::from_str::<serde_json::Value>(&event_data) {
-                                if let Some(data) = event_data.get("data") {
-                                    if let Some(data_str) = data.as_str() {
-                                        result.push(data_str.to_string());
-                                    } else {
-                                        result.push(data.to_string());
-                                    }
-                                }
-                            } else {
-                                // Otherwise, add the event data as is
-                                result.push(event_data);
-                            }
-                        }
-
-                        result
-                    }
-                    
-                }
-                Some(content_type) if content_type == "application/json" => {
-                    response.json().await.map_err(|e| e.into())
-                }
-                Some(content_type) if content_type == "text/plain" => {
-                    response.text().await.map(|text| text.into())
-                }                
-                _ => Err(format!("Invalid response content type: {:?}", content_type).into())
-            }
-        }
-        Err(e) => Err(e.into())
-    };
-
-    sender.send(result).await.expect("Failed to send result");
-}
-
 async fn forward_worker(obj: &PyAny, fn_name: &str, input: &PyDict,sender: Sender<Result<Value, Box<dyn Error>>>){
     let mut user_info: Option<PyObject> = None;
 
     // Wrap the code inside Python's with_gil to safely interact with Python objects
     Python::with_gil(|py| {
+        let mut input: HashMap<&str, &str> = HashMap::new();
+        input.insert("fn", fn_name);
         let isPublic = obj.getattr(public)?.extract::<bool>(py)?;
         // Verify the input with the server key class
         if !isPublic {
@@ -128,7 +43,7 @@ async fn forward_worker(obj: &PyAny, fn_name: &str, input: &PyDict,sender: Sende
         let c = PyModule::import(py, "c")?;
         let timestamp_method = c.getattr("timestamp")?;
 
-        // Execute the method and get the result 
+        // Execute the method and get the result
         let result: i64 = timestamp_method.call(())?.extract()?;
 
 
@@ -151,6 +66,11 @@ async fn forward_worker(obj: &PyAny, fn_name: &str, input: &PyDict,sender: Sende
         let data_kwargs: PyObject = data.get_item("kwargs").unwrap().extract(py)?;
         let args: Vec<PyObject> = data_args.extract(py)?;
         let kwargs: HashMap<String, PyObject> = data_kwargs.extract(py)?;
+        
+        let fn_name : String = format!("{}::{}", self.name, function_name)
+        let c = py.import("commune")?;
+        let print: PyObject = c.getattr('print)?;
+        print.call1(format!("🚀 Forwarding {} --> {} 🚀\033", input.get_item("address"), function_name),color :String = 'yellow');
 
         let fn_obj: PyObject = obj.module.getattr(fn_name)?;
         let fn_obj_callable: bool = fn_obj.hasattr("__call__")?;
@@ -161,7 +81,57 @@ async fn forward_worker(obj: &PyAny, fn_name: &str, input: &PyDict,sender: Sende
         } else {
             result = fn_obj;
         }
+        let success: bool;
 
+        if let Some(result) = result {
+            if let Some(_) = result.get("error") {
+                success = false;
+            } else {
+                success = true;
+            }
+        } else {
+            success = true;
+        }
+        if success {
+            let message = format!("✅ Success: {}::{} --> {}... ✅", name, function_name, address);
+            println!("{}", message.green());
+        } else {
+            let message = format!("🚨 Error: {}::{} --> {}... 🚨", name, function_name, address);
+            println!("{}", message.red());
+        }
+        let process_result: PyObject = obj.getattr('process_result')?;
+        let save_history: bool = obj.getattr('save_history');
+        if save_history{
+            let mut output: HashMap<&str, &str> = HashMap::new();
+            let name = "MyClass";
+            let function_name = "my_function";
+            let timestamp = "1234567890";
+            let address = "example.com";
+            let args = "arg1, arg2, arg3";
+            let kwargs = "key1=value1, key2=value2";
+            let result: Option<&str> = Some("Success");
+            let user_info = "user123";
+
+            output.insert("module", name);
+            output.insert("fn", function_name);
+            output.insert("timestamp", timestamp);
+            output.insert("address", address);
+            output.insert("args", args);
+            output.insert("kwargs", kwargs);
+            output.insert("result", result.unwrap_or(""));
+            output.insert("user", user_info);
+
+            output.entry("data").and_modify(|e| {
+                let data = e.clone();
+                e.clear();
+                e.extend(data);
+            });
+            
+            let latency = c.time() - timestamp.parse::<u64>().unwrap_or(0);
+            output.insert("latency", &latency.to_string());
+            let add_history: PyObject = obj.getattr('add_history');
+            add_history.call1(output)
+        }
         sender.send(result).await.expect("Failed to send result");
     })
 }
@@ -177,6 +147,7 @@ fn forward(py: Python, obj: &PyAny, fn_name: &str, input: &PyDict) -> PyResult<P
     // Receive and return the result
     rx.recv().await.expect("Failed to receive result")
 }
+
 #[pymodule]
 fn My_module(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(forward, m)?)?;
