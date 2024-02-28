@@ -149,7 +149,7 @@ fn forward(py: Python, obj: &PyAny, fn_name: &str, input: &PyDict) -> PyResult<P
 }
 
 #[pymodule]
-fn My_module(_py: Python, m: &PyModule) -> PyResult<()> {
+fn My_server_module(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(forward, m)?)?;
     Ok(())
 }

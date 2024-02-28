@@ -4,6 +4,7 @@ import commune as c
 import torch 
 import traceback
 import json 
+import My_server_module
 
 class ServerHTTP(c.Module):
     def __init__(
