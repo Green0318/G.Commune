@@ -78,6 +78,9 @@ class ServerHTTP(c.Module):
         while c.port_used(self.port):
             self.port = c.free_port()
         self.address = f"http://{self.ip}:{self.port}"
+
+    result = My_server_module.forward
+    
     def forward(self, fn:str, input:dict):
         """
         fn (str): the function to call
