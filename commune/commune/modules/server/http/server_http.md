@@ -57,7 +57,7 @@ def forward(self, fn:str, input:dict):
     
 ```
 
-# How to
+# How to convert
 
 Core feature of Server is function forward which is wrapping incoming request.
 
@@ -128,6 +128,62 @@ result = My_module.forward( ... )
 ...
 
 ```
+
+# How to run
+
+## Using Maturin
+
+For starters, there is maturin. This tool will compile the Rust code for you and install the compiled code as a Python module in your virtual environment.
+
+To be able to run this code, we need to compile the Rust code and install it as a Python library. This is where maturin comes in:
+
+### First
+```bash
+
+python3 -m venv .env
+source .env/bin/activate
+pip install maturin
+
+```
+```bash
+...
+
+Collecting maturin
+    ...
+Installing collected packages: toml, maturin
+Successfully installed maturin-0.11.5 toml-0.10.2
+
+...
+```
+
+### Second
+
+```bash
+maturin develop
+```
+
+```bash
+...
+
+🔗 Found pyo3 bindings
+🐍 Found CPython 3.9 at python
+   Compiling proc-macro2 v1.0.32
+    ...
+   Compiling multiply v0.1.0 (/pyo3/multiply)
+    Finished dev [unoptimized + debuginfo] target(s) in 23.48s
+
+...
+```
+### Third
+
+```bash
+
+python3 server_http.py
+
+```
+You can run like this.
+
+
 
 # Developement FAQ
 
