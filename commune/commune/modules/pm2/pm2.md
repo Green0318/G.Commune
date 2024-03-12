@@ -49,7 +49,7 @@ def cmd(cls, command:Union[str, list],
 In order to improve the performance, Steward can be used.
 
 
-
+In the pm2 code like below,
 ```bash
 
 c.cmd(f"pm2 restart {n}", verbose=False)
