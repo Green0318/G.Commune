@@ -58,7 +58,7 @@ fn list(py: Python, c: &PyModule) -> PyResult<Vec<String>> {
         }
     }
     Ok(module_list)
-}
+} 
 
 fn rm_logs(py: Python, cls: &PyAny, name: String) -> PyResult<()> {
     let logs_map = logs_path_map(py, cls, name)?;
