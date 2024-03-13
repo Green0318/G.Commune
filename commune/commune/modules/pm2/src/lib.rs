@@ -266,7 +266,7 @@ fn launch(
     result.insert("stdout".to_string(), cmd_result);
     Ok(result)
 }
-
+ 
 fn logs_path_map(py: Python, cls: &PyAny, name: Option<&str>) -> PyResult<HashMap<String, HashMap<String, String>>> {
     let c = py.import("c")?;
     let logs_path_map = HashMap::new();
