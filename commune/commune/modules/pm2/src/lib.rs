@@ -5,9 +5,14 @@ extern crate serde_json;
 use std::fs;
 use std::path::Path;
 use serde_json::Value;
-use std::collections::HashMap;
 use pyo3::wrap_pyfunction;
-
+use serde_json::json;
+use pyo3::exceptions::PyValueError;
+use pyo3::types::PyDict;
+use pyo3::types::PyTuple;
+use pyo3::derive_utils::PyFunctionArguments::Python;
+use pyo3::Python;
+use pyo3::Python as OtherPython;
 
 #[pyfunction]
 fn restart(py: Python, name: &str, verbose: bool, prefix_match: bool) -> PyResult<HashMap<String, PyObject>> {
@@ -42,7 +47,7 @@ fn restart(py: Python, name: &str, verbose: bool, prefix_match: bool) -> PyResul
         let cmd = c.getattr("cmd")?;
         cmd.call1((format!("pm2 restart {}", n), false))?;
         let cls = c.getattr("cls")?;
-        rm_logs(py, cls, n)?;
+        rm_logs(py, cls, n.to_string())?;
         restart_results.insert("success".to_string(), true.into_py(py));
         restart_results.insert("message".to_string(), format!("Restarted {}", name).into_py(py));
     }
@@ -53,7 +58,7 @@ fn restart(py: Python, name: &str, verbose: bool, prefix_match: bool) -> PyResul
 #[pyfunction]
 fn restart_prefix(py: Python, cls: &PyAny, name: Option<&str>, verbose: bool) -> PyResult<Vec<String>> {
     let c = py.import("c")?;
-    let list = list(py, cls)?;
+    let list = list(py, c)?;
     let mut restarted_modules = Vec::new();
 
     for module in list {
@@ -72,9 +77,9 @@ fn restart_prefix(py: Python, cls: &PyAny, name: Option<&str>, verbose: bool) ->
 }
 
 #[pyfunction]
-fn kill_many(py: Python, cls: &PyAny, search: Option<&str>, verbose: bool, timeout: i32) -> PyResult<Vec<PyObject>> {
+fn kill_many(py: Python, cls: &PyAny, search: Option<&str>, verbose: bool, timeout: i32) -> Result<Vec<Py<PyAny>>, PyErr> {
     let c = py.import("c")?;
-    let list = list(py, cls, search)?;
+    let list = list(py, c)?;
     let mut futures = Vec::new();
 
     for name in list {
@@ -82,7 +87,7 @@ fn kill_many(py: Python, cls: &PyAny, search: Option<&str>, verbose: bool, timeo
         print.call1((format!("[bold cyan]Killing[/bold cyan] [bold yellow]{}[/bold yellow]", name), "green"))?;
 
         let submit = c.getattr("submit")?;
-        let kwargs = [("name", name), ("verbose", verbose)];
+        let kwargs = [("name", name), ("verbose", verbose.to_string())];
         let kwargs_dict = PyDict::new(py);
         for &(key, value) in kwargs.iter() {
             kwargs_dict.set_item(key, value)?;
@@ -92,7 +97,8 @@ fn kill_many(py: Python, cls: &PyAny, search: Option<&str>, verbose: bool, timeo
     }
 
     let wait = c.getattr("wait")?;
-    wait.call1((futures,))
+    let tuple: PyTuple = futures.into_py(Python)?;
+    wait.call(tuple);
 }
 
 #[pyfunction]
@@ -115,7 +121,7 @@ fn list(py: Python, c: &PyModule) -> PyResult<Vec<String>> {
 } 
 
 fn rm_logs(py: Python, cls: &PyAny, name: String) -> PyResult<()> {
-    let logs_map = logs_path_map(py, cls, name)?;
+    let logs_map = logs_path_map(py, cls, name.to_string())?;
     let c = py.import("c")?;
     for k in logs_map.keys() {
         let rm = c.getattr("rm")?;
@@ -282,7 +288,7 @@ fn logs_path_map(py: Python, cls: &PyAny, name: Option<&str>) -> PyResult<HashMa
             let file_name_parts: Vec<&str> = parts[parts.len() - 1].split('.').collect();
             map.insert(file_name_parts[0].to_string(), l.to_string());
         }
-        *value = map;
+        *value = map.to_string();
     }
 
     match name {
@@ -303,8 +309,8 @@ fn mymodule(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(kill_many, m)?)?;
     m.add_function(wrap_pyfunction!(kill_all, m)?)?;
     m.add_function(wrap_pyfunction!(exists, m)?)?;
-    m.add_function(wrap_pyfunction!(start, m)?)?;
-    m.add_function(wrap_pyfunction!(launch, m)?)?;
+    // m.add_function(wrap_pyfunction!(start, m)?)?;
+    // m.add_function(wrap_pyfunction!(launch, m)?)?;
     Ok(())
 }
 
