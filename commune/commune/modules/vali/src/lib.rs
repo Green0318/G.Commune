@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use std::collections::HashMap;
+use std::time::Instant;
 
 
 #[pyfunction]
@@ -86,11 +87,123 @@ fn start_workers(_py: Python, _self: &PyAny, num_workers: i32, refresh: bool, mo
     Ok(responses)
 }
 
+
+
+
+#[pyfunction]
+fn worker2logs(_py: Python, _self: &PyAny, worker: &str) -> PyResult<HashMap<String, Vec<String>>> {
+    let workers: Vec<String> = _self.call_method0("workers")?.extract()?;
+    let mut worker2logs = HashMap::new();
+    for w in workers {
+        worker2logs.insert(w.clone(), _self.call_method1("logs", (w,))?.extract()?);
+    }
+    Ok(worker2logs)
+}
+
+#[getter]
+fn worker_name_prefix(_py: Python, _self: &PyAny) -> PyResult<String> {
+    Ok(format!("{}/{}", _self.getattr("server_name")?.extract::<String>()?, _self.getattr("worker_fn")?.extract::<String>()?))
+}
+
+#[pyfunction]
+fn worker(_py: Python, _cls: &PyAny, args: Option<&PyTuple>, kwargs: Option<&PyDict>) -> PyResult<()> {
+    let kwargs = kwargs.unwrap_or_else(|| PyDict::new(_py));
+    kwargs.set_item("start", false)?;
+    let self_ = _cls.call(*args, Some(kwargs))?;
+    _py.run(|py| {
+        let c = PyModule::import(py, "c")?;
+        c.call1(("new_event_loop",), &[("nest_asyncio", true)])?;
+        c.call1(("print",), &[("Running -> network: {} netuid: {}", (_self.getattr("config")?.getattr("network")?, _self.getattr("config")?.getattr("netuid")?))])?;
+        
+        let mut running = true;
+        let mut last_print = Instant::now();
+        let executor = c.call_method1("module", ("executor.thread",))?.call1(("max_workers", _self.getattr("config")?.getattr("num_threads")?))?;
+
+        while running {
+            let mut results = Vec::new();
+            let mut futures = Vec::new();
+            if _self.getattr("last_sync_time")?.extract::<Instant>()? + _self.getattr("config")?.getattr("sync_interval")?.extract::<Instant>()? < Instant::now() {
+                c.call1(("print",), &[("Syncing network {}", _self.getattr("config")?.getattr("network")?), ("cyan",)])?;
+                _self.call_method0("sync")?;
+            }
+            let module_addresses = c.call_method0("shuffle", (_self.call_method0("copy", (_self.getattr("module_addresses")?,))?,))?;
+            let batch_size = _self.getattr("config")?.getattr("batch_size")?;
+            for (i, module_address) in module_addresses.extract::<HashSet<String>>()?.into_iter().enumerate() {
+                if futures.len() < batch_size.extract::<usize>()? {
+                    let future = executor.call_method1("submit", (_self.call_method1("eval_module", (module_address,))?,))?;
+                    futures.push(future);
+                } else {
+                    for ready_future in c.call_method1("as_completed", (futures,))? {
+                        let ready_future = ready_future?;
+                        let result = ready_future.call_method0("result")?;
+                        futures.remove(ready_future)?;
+                        results.push(result)?;
+                        break;
+                    }
+                }
+                if last_print.elapsed() > _self.getattr("config")?.getattr("print_interval")?.extract::<Instant>()? {
+                    let stats = pyo3::types::PyDict::new(py);
+                    stats.set_item("lifetime", _self.getattr("lifetime")?)?;
+                    stats.set_item("pending", futures.len())?;
+                    stats.set_item("sent", _self.getattr("requests")?)?;
+                    stats.set_item("errors", _self.getattr("errors")?)?;
+                    stats.set_item("successes", _self.getattr("successes")?)?;
+                    c.call1(("print",), &[("{}", stats), ("cyan",)])?;
+                    last_print = Instant::now();
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+#[pyfunction]
+fn sync(_py: Python, _self: &PyAny, network: Option<&str>, search: Option<&str>, netuid: Option<i32>, update: Option<bool>) -> PyResult<HashMap<String, PyObject>> {
+    let network = network.unwrap_or_else(|| _self.getattr("config")?.getattr("network")?.extract::<String>().unwrap());
+    let search = search.unwrap_or_else(|| _self.getattr("config")?.getattr("search")?.extract::<String>().unwrap());
+    let netuid = netuid.unwrap_or_else(|| _self.getattr("config")?.getattr("netuid")?.extract::<i32>().unwrap());
+    let update = update.unwrap_or(false);
+    
+    if network.contains("subspace") {
+        let mut splits = network.split('.');
+        let network = splits.next().unwrap_or_default();
+        let netuid = splits.next().unwrap_or_default().parse::<i32>().unwrap_or_default();
+        let subspace = _py.import("subspace")?;
+        _self.setattr("subspace", subspace)?;
+    } else {
+        _self.delattr("subspace")?;
+        _self.setattr("name2key", PyDict::new(_py))?;
+    }
+
+    _self.setattr("network", network)?;
+    _self.setattr("netuid", netuid)?;
+    
+    let namespace = _self.call_method1("namespace", (search,))?;
+    let n = namespace.getattr("__len__")?.call0()?.extract::<i32>()?;
+    let module_addresses = namespace.call_method0("values")?.to_list(_py)?;
+    let names = namespace.call_method0("keys")?.to_list(_py)?;
+    let address2name = _py.eval("dict(zip(module_addresses, names))", None, None)?;
+    _self.setattr("last_sync_time", Instant::now())?;
+
+    let mut r = HashMap::new();
+    r.insert("network".to_string(), network.to_object(_py));
+    r.insert("netuid".to_string(), netuid.to_object(_py));
+    r.insert("n".to_string(), n.to_object(_py));
+    r.insert("timestamp".to_string(), Instant::now().to_object(_py));
+    r.insert("msg".to_string(), "Synced network".to_object(_py));
+
+    Ok(r)
+}
+
 #[pymodule]
 fn mymodule(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_loop, m)?)?;
     m.add_function(wrap_pyfunction!(run_info, m)?)?;
     m.add_function(wrap_pyfunction!(workers, m)?)?;
     m.add_function(wrap_pyfunction!(start_workers, m)?)?;
+    m.add_function(wrap_pyfunction!(worker2logs, m)?)?;
+    m.add_getter(wrap_pyfunction!(worker_name_prefix, m)?)?;
+    m.add_function(wrap_pyfunction!(worker, m)?)?;
+    m.add_function(wrap_pyfunction!(sync, m)?)?;
     Ok(())
 }
