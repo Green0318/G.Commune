@@ -195,8 +195,276 @@ fn sync(_py: Python, _self: &PyAny, network: Option<&str>, search: Option<&str>,
     Ok(r)
 }
 
+
+#[pyclass]
+struct NetworkConfig {
+    network: String,
+    search: String,
+    netuid: i32,
+}
+
+#[pymethods]
+impl NetworkConfig {
+    #[new]
+    fn new() -> Self {
+        NetworkConfig {
+            network: String::new(),
+            search: String::new(),
+            netuid: 0,
+        }
+    }
+}
+
+#[pyfunction]
+fn set_network(obj: &PyAny, network: Option<&str>, search: Option<&str>, netuid: Option<i32>, update: bool) -> PyResult<HashMap<&str, Py<PyAny>>> {
+    let network_config: Py<NetworkConfig> = obj.extract()?;
+    let mut network_config = network_config.borrow_mut();
+
+    let network = match network {
+        Some(n) => n.to_string(),
+        None => network_config.network.clone(),
+    };
+
+    let search = match search {
+        Some(s) => s.to_string(),
+        None => network_config.search.clone(),
+    };
+
+    let netuid = match netuid {
+        Some(n) => n,
+        None => network_config.netuid,
+    };
+
+    // Handling for "subspace" network
+    if network.contains("subspace") {
+        if network.contains(".") {
+            let splits: Vec<&str> = network.split('.').collect();
+            assert_eq!(splits.len(), 2, "Network must be in the form of {{network}}.{{subnet/netuid}}, got {}", network_config.network);
+            let netuid_str = splits[1];
+            let netuid = netuid_str.parse::<i32>().unwrap();
+            network_config.network = splits[0].to_string();
+            network_config.netuid = netuid;
+        } else {
+            network_config.network = "subspace".to_string();
+            network_config.netuid = 0;
+        }
+        // Assuming `c.module` and `c.namespace` functions are already implemented
+        // Adjust this part accordingly
+        // self.subspace = c.module("subspace")(netuid=netuid);
+    } else {
+        // Assuming `name2key` is a field of `NetworkConfig`
+        network_config.name2key.clear();
+    }
+
+    // Assuming `c.namespace` and `c.time` functions are already implemented
+    // Adjust this part accordingly
+    // self.namespace = c.namespace(search=search, network=network, netuid=netuid, update=update);
+    let namespace = HashMap::new(); // Placeholder
+    let n = namespace.len();
+    let address2name: HashMap<&str, &str> = namespace.iter().map(|(k, v)| (v, k)).collect();
+    let last_sync_time = 0; // Placeholder
+
+    network_config.network = network.clone();
+    network_config.search = search.clone();
+    network_config.netuid = netuid;
+
+    let mut result = HashMap::new();
+    result.insert("network", network.to_object(obj.py()));
+    result.insert("netuid", netuid.to_object(obj.py()));
+    result.insert("n", n.to_object(obj.py()));
+    result.insert("timestamp", last_sync_time.to_object(obj.py()));
+    result.insert("msg", "Synced network".to_object(obj.py()));
+
+    Ok(result)
+}
+
+
+
+#[pyfunction]
+fn eval_module(obj: &PyAny, module: &str) -> PyResult<HashMap<&str, Py<PyAny>>> {
+    // Load module stats (if exists)
+
+    // Load module info and calculate staleness
+    // If the module is stale, return the module info
+    let info = obj.call_method1("get_module_info", (module,))?;
+    let module = obj.call_method1("connect", (info.get_item("address").unwrap(),), Some("key".into()))?;
+    let requests: usize = obj.getattr("requests")?.extract()?;
+    let config_max_staleness: f64 = obj.getattr("config").unwrap().getattr("max_staleness")?.extract()?;
+    let time_now: f64 = obj.call_method0("time")?.extract()?;
+    let seconds_since_called = time_now - info.get_item("timestamp").unwrap().extract::<f64>()?;
+    if seconds_since_called < config_max_staleness {
+        return Ok(hashmap!{
+            "w" => info.get("w").unwrap_or(0),
+            "module" => info["name"],
+            "address" => info["address"],
+            "timestamp" => time_now,
+            "msg" => format!("Module is not stale, {} < {}", seconds_since_called, config_max_staleness)
+        });
+    }
+
+    let module_info = module.call_method0("info")?;
+    assert!(info.contains("address") && info.contains("name"));
+
+    // Make sure module info has a timestamp
+    let mut info_dict: HashMap<&str, Py<PyAny>> = info.extract()?;
+    info_dict.extend(module_info.extract::<HashMap<&str, Py<PyAny>>>()?);
+    info_dict.insert("timestamp", time_now);
+
+    let response = obj.call_method1("score_module", (module,))?;
+    let response_checked = obj.call_method1("check_response", (response,))?;
+
+    let successes: usize = obj.getattr("successes")?.extract()?;
+    let alpha: f64 = obj.getattr("config").unwrap().getattr("alpha")?.extract()?;
+    let w: f64 = response_checked["w"].extract()?;
+    let latency = time_now - info_dict["timestamp"].extract::<f64>()?;
+    let path = format!("{}/{}", obj.getattr("storage_path")?.extract::<String>()?, info_dict["name"].extract::<String>()?);
+    obj.call_method1("put_json", (path.clone(), info_dict))?;
+
+    let mut result = hashmap!{
+        "w" => w * alpha + info_dict["w"].extract::<f64>()? * (1.0 - alpha),
+        "module" => info_dict["name"],
+        "address" => info_dict["address"],
+        "latency" => latency
+    };
+
+    if let Ok(emoji_check) = obj.call_method0("emoji", ("checkmark",)) {
+        result.insert("msg", format!("{}{} --> w:{} {}", emoji_check, info_dict["name"], w, emoji_check));
+    } else {
+        result.insert("msg", format!("{} {} {}", obj.call_method0("emoji", ("cross",))?, info_dict["name"], obj.call_method0("emoji", ("cross",))?));
+    }
+
+    Ok(result)
+}
+
+
+#[pyfunction]
+fn vote(obj: &PyAny, async_vote: bool, save: bool, kwargs: Option<HashMap<&str, &str>>) -> PyResult<HashMap<&str, Py<PyAny>>> {
+    if async_vote {
+        return obj.call_method1("submit", (obj.getattr("vote")?,));
+    }
+
+    let votes = obj.call_method0("votes")?;
+    let config_min_num_weights: usize = obj.getattr("config")?.getattr("min_num_weights")?.extract()?;
+    let votes_uids_len: usize = votes.get_item("uids").unwrap().extract()?;
+    if votes_uids_len < config_min_num_weights {
+        return Ok(hashmap!{
+            "success" => false,
+            "msg" => "The votes are too low",
+            "votes" => votes_uids_len,
+            "min_num_weights" => config_min_num_weights
+        });
+    }
+
+    let r = obj.call_method1("vote", (votes.get_item("uids").unwrap(), votes.get_item("weights").unwrap(), obj.getattr("key")?, obj.getattr("config")?.getattr("network")?, obj.getattr("config")?.getattr("netuid")?))?;
+    
+    if save {
+        obj.call_method1("save_votes", (votes,))?;
+    }
+
+    let time_now: f64 = obj.call_method0("time")?.extract()?;
+    obj.setattr("last_vote_time", time_now)?;
+
+    Ok(hashmap!{
+        "success" => true,
+        "message" => "Voted",
+        "num_uids" => votes_uids_len,
+        "timestamp" => time_now,
+        "avg_weight" => obj.call_method1("mean", (votes.get_item("weights").unwrap(),))?,
+        "stdev_weight" => obj.call_method1("stdev", (votes.get_item("weights").unwrap(),))?,
+        "r" => r
+    })
+}
+
+#[pyfunction]
+fn dashboard(obj: &PyAny) -> PyResult<()> {
+    let streamlit = Python::acquire_gil().python().import("streamlit")?;
+    let module_path: String = obj.call_method0("path")?.extract()?;
+    obj.call_method0("load_style")?;
+    let new_event_loop = obj.call_method0("new_event_loop")?;
+    let title = streamlit.call_method1("title", (module_path.clone(),))?;
+    let servers = obj.call_method0("servers")?;
+    let server = streamlit.call_method1("selectbox", ("Select Vali", servers))?;
+    let state_path = format!("dashboard/{}", server);
+    let module = obj.call_method1("module", (server.clone(),))?;
+    let state = module.call_method1("get", (state_path.clone(), {}))?;
+    let server = obj.call_method1("connect", (server.clone(),))?;
+
+    let module_infos = if state.len() == 0 {
+        let run_info = server.getattr("run_info")?;
+        let module_infos = server.call_method0("module_infos")?;
+        let state = hashmap!{
+            "run_info" => run_info,
+            "module_infos" => module_infos
+        };
+        obj.call_method1("put", (state_path.clone(), state))?;
+        module_infos
+    } else {
+        state.get_item("module_infos")?
+    };
+
+    let mut df = vec![];
+    let selected_columns = ["name", "address", "w", "staleness"];
+    let selected_columns = streamlit.call_method1("multiselect", ("Select columns", selected_columns, selected_columns))?;
+    let search = streamlit.call_method0("text_input", ("Search",))?;
+    for row in module_infos.iter::<PyList>()? {
+        let row = row?;
+        if !search.is_none() && !row.get_item("name").unwrap().extract::<String>()?.contains(&search.extract::<String>()?) {
+            continue;
+        }
+        let mut row_dict = HashMap::new();
+        for column in selected_columns.iter::<PyList>()? {
+            let column = column?;
+            row_dict.insert(column.extract::<String>()?, row.get_item(column)?);
+        }
+        df.push(row_dict);
+    }
+    if df.len() == 0 {
+        streamlit.call_method1("write", ("No modules found",))?;
+    } else {
+        let default_columns = ["w", "staleness"];
+        let mut sorted_columns = vec![];
+        for c in &default_columns {
+            if df.get_item(c).unwrap() {
+                sorted_columns.push(c.clone());
+            }
+        }
+        df.sort_by(|a, b| {
+            let mut comparison = 0;
+            for c in sorted_columns.iter() {
+                if a.get(c) > b.get(c) {
+                    comparison = -1;
+                    break;
+                } else if a.get(c) < b.get(c) {
+                    comparison = 1;
+                    break;
+                }
+            }
+            comparison
+        });
+        streamlit.call_method1("write", (df,))?;
+    }
+    Ok(())
+}
+
+#[pyfunction]
+fn vote_loop(obj: &PyAny) -> PyResult<()> {
+    loop {
+        if obj.getattr("should_vote")?.extract::<bool>()? {
+            let futures = vec![obj.call_method0("submit", (obj.getattr("vote")?,))?];
+            for ready_future in futures {
+                let result = ready_future?.call_method0("result")?;
+                obj.call_method1("print", (result,))?;
+            }
+        }
+        obj.call_method1("print", (obj.call_method0("run_info")?.result()?,))?;
+        obj.call_method1("sleep", (obj.getattr("config")?.getattr("sleep_interval")?,))?;
+    }
+}
+
+
+
 #[pymodule]
-fn mymodule(py: Python, m: &PyModule) -> PyResult<()> {
+fn mymodule_vali(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_loop, m)?)?;
     m.add_function(wrap_pyfunction!(run_info, m)?)?;
     m.add_function(wrap_pyfunction!(workers, m)?)?;
@@ -205,5 +473,12 @@ fn mymodule(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_getter(wrap_pyfunction!(worker_name_prefix, m)?)?;
     m.add_function(wrap_pyfunction!(worker, m)?)?;
     m.add_function(wrap_pyfunction!(sync, m)?)?;
+    m.add_class::<NetworkConfig>()?;
+    m.add_function(wrap_pyfunction!(set_network, m)?)?;
+    m.add_function(wrap_pyfunction!(eval_module, m)?)?;
+    m.add_function(wrap_pyfunction!(vote, m)?)?;
+    m.add_function(wrap_pyfunction!(dashboard, m)?)?;
+    m.add_function(wrap_pyfunction!(vote_loop, m)?)?;
+
     Ok(())
 }

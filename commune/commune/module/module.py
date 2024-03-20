@@ -93,7 +93,7 @@ class c:
             
         # get the config
         config =  self.get_config(config=config,kwargs=kwargs, to_munch=to_munch)
-
+    
 
         # add the config attributes to the class (via munch -> dict -> class )
         if add_attributes:
